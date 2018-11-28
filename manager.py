@@ -10,7 +10,7 @@ class NetworkManager:
     '''
     Helper class to manage the generation of subnetwork training given a dataset
     '''
-    def __init__(self, dataset, epochs=5, batchsize=128):
+    def __init__(self, dataset, epochs=5, batchsize=128, use_generator=False, monitor='val_acc'):
         '''
         Manager which is tasked with creating subnetworks, training them on a dataset, and retrieving
         rewards in the term of accuracy, which is passed to the controller RNN.
@@ -22,10 +22,17 @@ class NetworkManager:
             acc_beta: exponential weight for the accuracy
             clip_rewards: whether to clip rewards in [-0.05, 0.05] range to prevent
                 large weight updates. Use when training is highly unstable.
+            use_generator: whether to use a keras generator for training instead of a static dataset
+                - in the case of a generator, dataset is expected to be a tuple 
+                  (training_generator, validation_generator).
+            monitor: monitor argument to pass to the ModelCheckpoint keras callback. E.g. 'val_loss',
+                or 'val_acc' for regression or classification, respectively.
         '''
         self.dataset = dataset
         self.epochs = epochs
         self.batchsize = batchsize
+        self.use_generator = use_generator
+        self.monitor = monitor
 
     def get_rewards(self, model_fn, actions):
         '''
@@ -61,17 +68,31 @@ class NetworkManager:
             optimizer = Adam(lr=1e-3, amsgrad=True)
             model.compile(optimizer, 'categorical_crossentropy', metrics=['accuracy'])
 
-            # unpack the dataset
-            X_train, y_train, X_val, y_val = self.dataset
-
-            # train the model using Keras methods
-            model.fit(X_train, y_train, batch_size=self.batchsize, epochs=self.epochs,
-                      verbose=1, validation_data=(X_val, y_val),
-                      callbacks=[ModelCheckpoint('weights/temp_network.h5',
-                                                 monitor='val_acc', verbose=1,
-                                                 save_best_only=True,
-                                                 save_weights_only=True)])
-
+            if not self.use_generator:
+                # unpack the dataset
+                X_train, y_train, X_val, y_val = self.dataset
+                
+                # train the model using Keras methods
+                model.fit(X_train, y_train, batch_size=self.batchsize, epochs=self.epochs,
+                          verbose=1, validation_data=(X_val, y_val),
+                          callbacks=[ModelCheckpoint('weights/temp_network.h5',
+                                                     monitor=self.monitor, verbose=1,
+                                                     save_best_only=True,
+                                                     save_weights_only=True)])
+            else:
+                training_generator, validation_generator = self.dataset
+                model.fit_generator(
+                    generator=training_generator,
+                    validation_data=validation_generator,
+                    use_multiprocessing=True,
+                    epochs=self.epochs,
+                    verbose=1,
+                    workers=6,
+                    callbacks=[ModelCheckpoint('weights/temp_network.h5',
+                                                     monitor='val_acc', verbose=1,
+                                                     save_best_only=True,
+                                                     save_weights_only=True)]
+                )            
             # load best performance epoch in this training session
             model.load_weights('weights/temp_network.h5')
 
